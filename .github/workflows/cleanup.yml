@@ -1,0 +1,44 @@
+name: cleanup-old-takeouts
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prune takeouts older than 7 days
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          NOW=$(date -u +%s)
+          REMOVED=0
+          for dir in docs/*/; do
+            marker="${dir}published-at.txt"
+            if [ ! -f "$marker" ]; then
+              continue
+            fi
+            ts=$(head -1 "$marker" | tr -d '\r\n')
+            published=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+            [ "$published" -gt 0 ] || continue
+            age_days=$(( (NOW - published) / 86400 ))
+            if [ "$age_days" -ge 7 ]; then
+              echo "removing $dir (age ${age_days}d, published $ts)"
+              git rm -rqf "$dir"
+              REMOVED=$((REMOVED + 1))
+            fi
+          done
+          echo "removed $REMOVED stale takeouts"
+          if [ $REMOVED -gt 0 ]; then
+            git config user.email "actions@github.com"
+            git config user.name  "workshop-takeouts cleanup"
+            git commit -m "Auto-expire $REMOVED takeout(s) older than 7 days"
+            git push
+          fi
