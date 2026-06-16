@@ -11,10 +11,31 @@ permissions:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prune takeouts older than 7 days
+      - name: Delete release takeouts older than 7 days
+        run: |
+          set -euo pipefail
+          NOW=$(date -u +%s)
+          REMOVED=0
+          while IFS=$'\t' read -r tag created; do
+            [ -n "$tag" ] || continue
+            cts=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
+            [ "$cts" -gt 0 ] || continue
+            age_days=$(( (NOW - cts) / 86400 ))
+            if [ "$age_days" -ge 7 ]; then
+              echo "deleting release $tag (age ${age_days}d, created $created)"
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+              REMOVED=$((REMOVED + 1))
+            fi
+          done < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+                     --json tagName,createdAt --jq '.[] | [.tagName, .createdAt] | @tsv')
+          echo "removed $REMOVED stale release(s)"
+
+      - name: Prune legacy Pages takeouts (docs/) older than 7 days
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -22,9 +43,7 @@ jobs:
           REMOVED=0
           for dir in docs/*/; do
             marker="${dir}published-at.txt"
-            if [ ! -f "$marker" ]; then
-              continue
-            fi
+            [ -f "$marker" ] || continue
             ts=$(head -1 "$marker" | tr -d '\r\n')
             published=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
             [ "$published" -gt 0 ] || continue
@@ -35,10 +54,10 @@ jobs:
               REMOVED=$((REMOVED + 1))
             fi
           done
-          echo "removed $REMOVED stale takeouts"
-          if [ $REMOVED -gt 0 ]; then
+          if [ "$REMOVED" -gt 0 ]; then
             git config user.email "actions@github.com"
             git config user.name  "workshop-takeouts cleanup"
-            git commit -m "Auto-expire $REMOVED takeout(s) older than 7 days"
+            git commit -m "Auto-expire $REMOVED legacy takeout(s) older than 7 days"
             git push
           fi
+          echo "removed $REMOVED legacy docs takeout(s)"
